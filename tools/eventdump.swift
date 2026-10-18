@@ -55,12 +55,20 @@ let rotateSteps = [
     "2-finger DOUBLE TAP on a web page in Safari (smart zoom in)",
     "2-finger DOUBLE TAP again (smart zoom out)",
 ]
+// `... /tmp/plugin.txt plugin`: for checking what the T650 plugin (or t650d) actually posts. Run it
+// WITH the plugin loaded and use the T650 itself; the file then shows the events it generated.
+let pluginSteps = [
+    "T650: 2-finger PINCH out, then in, slowly (over a photo in Preview or a map)",
+    "T650: 2-finger DOUBLE TAP on a web page in Safari (smart zoom)",
+    "T650: 2-finger ROTATE clockwise about 90 degrees on a photo in Preview",
+]
 let activeSteps: [String] = {
     guard CommandLine.arguments.count > 2 else { return steps }
     switch CommandLine.arguments[2] {
     case "edge": return edgeSteps
     case "drag": return dragSteps
     case "rotate": return rotateSteps
+    case "plugin": return pluginSteps
     default: return steps
     }
 }()
