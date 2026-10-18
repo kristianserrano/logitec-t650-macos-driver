@@ -360,7 +360,7 @@ final class Daemon {
 /// --synthetic=<name>: post one native swipe gesture without the pad, to check that
 /// macOS reacts to the events themselves. Names: pinch-in, spread, left, right, up, down
 /// (4 fingers; left/right/up/down are the direction the fingers move), 3-left, 3-right,
-/// drag (the 3-finger hold-drag: press, move right, release), edge (toggle Notification Center), and smart-zoom.
+/// drag (the 3-finger hold-drag: press, move right, release), edge (toggle Notification Center), smart-zoom, and rotate / rotate-ccw (90 degrees).
 func syntheticGesture(_ name: String) {
     let out = Output(gesturesOnly: false)
     if name == "edge" || name == "notification-center" {
@@ -369,6 +369,16 @@ func syntheticGesture(_ name: String) {
         out.post(.edgeSwipe(phase: .changed, travel: 300))
         out.post(.edgeSwipe(phase: .ended, travel: 500))
         print("t650d: posted synthetic edge swipe")
+        return
+    }
+    if name == "rotate" || name == "rotate-ccw" {
+        // Open a photo in Preview and park the pointer over it. Turns 90 degrees in 45 steps.
+        let sign = name == "rotate" ? 1.0 : -1.0       // recogniser convention: clockwise is positive
+        print("t650d: synthetic \(name) in 3 s; put the pointer over a photo in Preview")
+        sleep(3)
+        for _ in 0..<45 { out.post(.rotate(degrees: 2 * sign)); usleep(15_000) }
+        out.post(.rotateEnd)
+        print("t650d: posted synthetic \(name)")
         return
     }
     if name == "smart-zoom" {

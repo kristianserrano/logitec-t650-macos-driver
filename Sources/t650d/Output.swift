@@ -29,6 +29,8 @@ final class Output {
     let nativePinch = ProcessInfo.processInfo.environment["T650_PINCH"] != "keys"
     var pinchGain = Output.env("T650_PINCH_GAIN") ?? 1.0
     private var magnifying = false
+    private var rotating = false
+    var rotateGain = Output.env("T650_ROTATE_GAIN") ?? 1.0
     private var dragging = false
     /// Two-finger double tap = smart zoom, as on a trackpad. A single two-finger tap is a
     /// secondary click, so it waits a moment to see whether a second tap follows.
@@ -101,10 +103,9 @@ final class Output {
             if debugEdge { NSLog("t650d: edge swipe %@ travel %.0f", String(describing: phase), travel) }
             if phase == .ended, travel >= edgeCommit { toggleNotificationCenter() }
         case let .rotate(degrees):
-            // Native rotate event not captured yet (see tools/eventdump.swift "rotate").
-            if debugEdge { NSLog("t650d: rotate %.1f deg", degrees) }
+            rotate(degrees)
         case .rotateEnd:
-            break
+            endRotate()
         case .dragBegan:
             dragging = true
             click(down: true)
@@ -145,13 +146,27 @@ final class Output {
         magnifying = false
     }
 
-    private func postGesture(phase: Int64, magnification: Double?) {
+    private func postGesture(hid: Int64 = 8, phase: Int64, magnification: Double?) {
         guard let ev = CGEvent(source: nil), let type = CGEventType(rawValue: 29) else { return }
         ev.type = type
-        ev.setIntegerValueField(CGEventField(rawValue: 110)!, value: 8)
+        ev.setIntegerValueField(CGEventField(rawValue: 110)!, value: hid)
         ev.setIntegerValueField(CGEventField(rawValue: 132)!, value: phase)
         if let m = magnification { ev.setDoubleValueField(CGEventField(rawValue: 113)!, value: m) }
         ev.post(tap: .cghidEventTap)
+    }
+
+    /// Native rotate gesture, as recorded from a Casa Touch under Options+: the same
+    /// layout as magnify with field 110 = 5, and the incremental turn in degrees in field
+    /// 113 (positive = counterclockwise, so clockwise is negative). The end event has no value.
+    private func rotate(_ degrees: Double) {
+        postGesture(hid: 5, phase: rotating ? 2 : 1, magnification: -degrees * rotateGain)
+        rotating = true
+    }
+
+    private func endRotate() {
+        guard rotating else { return }
+        postGesture(hid: 5, phase: 4, magnification: nil)
+        rotating = false
     }
 
     private func twoFingerTap() {
