@@ -258,6 +258,52 @@ final class RecognizerTests: XCTestCase {
         }
     }
 
+    // MARK: two-finger rotation
+
+    private func rotations(_ ev: [GestureEvent]) -> [Double] {
+        ev.compactMap { if case let .rotate(d) = $0 { return d }; return nil }
+    }
+
+    func testTwoFingerRotationAroundTheMidpoint() {
+        // Fingers 300 units either side of (1500, 1200), turning 1.5 degrees per frame.
+        var frames: [TouchFrame] = []
+        for i in 0..<40 {
+            let a = Double(i) * 1.5 * .pi / 180
+            let c = cos(a), s = sin(a)
+            frames.append(frame([(1, 1500 - Int(300 * c), 1200 - Int(300 * s)),
+                                 (2, 1500 + Int(300 * c), 1200 + Int(300 * s))]))
+        }
+        let ev = run(frames)
+        let r = rotations(ev)
+        XCTAssertGreaterThan(r.count, 20)
+        XCTAssertEqual(r.reduce(0, +), 39 * 1.5, accuracy: 3, "the full turn is reported")
+        XCTAssertGreaterThan(r.reduce(0, +), 0, "y points down, so growing angle is clockwise")
+        XCTAssertEqual(count(ev, isScroll) + count(ev, isPinch), 0)
+        XCTAssertEqual(ev.last, .rotateEnd)
+    }
+
+    func testRotationPivotingOnOneFingerAndCounterclockwise() {
+        // One finger still, the other circling it counterclockwise.
+        var frames: [TouchFrame] = []
+        for i in 0..<40 {
+            let a = -Double(i) * 2 * .pi / 180
+            frames.append(frame([(1, 1500, 1200), (2, 1500 + Int(500 * cos(a)), 1200 + Int(500 * sin(a)))]))
+        }
+        let ev = run(frames)
+        XCTAssertGreaterThan(rotations(ev).count, 15)
+        XCTAssertLessThan(rotations(ev).reduce(0, +), -50, "counterclockwise is negative")
+    }
+
+    func testParallelScrollWithSlightLagIsStillAScroll() {
+        var frames: [TouchFrame] = []
+        for i in 0..<40 {
+            frames.append(frame([(1, 1200, 600 + i * 12 + (i % 3)), (2, 1800, 600 + i * 12 - (i % 3))]))   // 1-2 unit stagger
+        }
+        let ev = run(frames)
+        XCTAssertTrue(rotations(ev).isEmpty)
+        XCTAssertGreaterThan(count(ev, isScroll), 20)
+    }
+
     // MARK: press slide, edge swipe
 
     func testPressSlideIsUndoneButADeliberateMoveIsNot() {

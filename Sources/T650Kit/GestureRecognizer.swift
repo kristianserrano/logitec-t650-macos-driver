@@ -28,6 +28,9 @@ public enum GestureEvent: Equatable {
     case scroll(dx: Double, dy: Double)
     case pinch(scale: Double)               // multiplicative per-event factor
     case pinchEnd                           // the pinch's fingers lifted or changed count
+    /// Two-finger rotation, incremental, in degrees. Positive = clockwise on screen.
+    case rotate(degrees: Double)
+    case rotateEnd
     case tap(fingers: Int)
     /// A multi-finger swipe. `travel` is the net movement since the swipe began, in
     /// device units: horizontal +right, vertical +down (screen orientation), pinch
@@ -52,6 +55,8 @@ public struct GestureRecognizer {
     public var dragHoldMs = 50.0             // three fingers still this long = begin a drag (tuned on hardware)
     public var dragHoldSlop = 60.0           // ... "still" tolerates this much landing/resting jitter (~2.7 mm)
     public var pinchBias = 1.5               // two fingers: spread change must beat translation by this factor
+    public var rotateBias = 0.9              // two fingers: rotation arc must beat translation by this factor
+                                             // (a rotation pivoting on one finger has arc == translation)
     public var multiPinchBias = 0.8          // four fingers: a thumb closing on three fingers moves the centroid
                                              // almost as much as it shrinks the spacing, so the bar is lower
     public var moveSlop = 12.0               // device units (~0.5 mm) a new touch must travel before the cursor follows
@@ -60,7 +65,7 @@ public struct GestureRecognizer {
     public var clickRewindMaxTravel = 50.0   // ... but never a deliberate move longer than this
     static let padWidth = 2832.0             // spec §3.4
 
-    private enum TwoFingerMode { case undecided, scroll, pinch, edge }
+    private enum TwoFingerMode { case undecided, scroll, pinch, edge, rotate }
     private enum MultiMode: Equatable { case undecided, swipe(SwipeAxis), drag, ignored }
 
     private var session: Session?
@@ -74,8 +79,9 @@ public struct GestureRecognizer {
         var multiTouched = false             // 2+ fingers settled at some point
         var totalDX = 0.0, totalDY = 0.0     // whole session, for tap travel
         var twoMode = TwoFingerMode.undecided
-        var pairStart: (dist: Double, mx: Double, my: Double)?   // pair geometry when the mode window opened
+        var pairStart: (dist: Double, mx: Double, my: Double, ang: Double)?   // pair geometry when the mode window opened
         var lastPairDistance: Double?
+        var lastPairAngle: Double?
         var edgeTravel = 0.0
         var sawButton = false                // the physical button went down during this touch
         var moveOrigin: (x: Int, y: Int)?    // where the first lone finger landed
@@ -119,6 +125,7 @@ public struct GestureRecognizer {
         if s.candidateFrames >= settleFrames && s.settledCount != rawCount {
             if s.twoMode == .pinch { events.append(.pinchEnd) }
             if s.twoMode == .edge { events.append(.edgeSwipe(phase: .ended, travel: s.edgeTravel)) }
+            if s.twoMode == .rotate { events.append(.rotateEnd) }
             let ended = endMulti(s)
             if !ended.isEmpty { s.multiDone = true }   // fingers lifting one by one must not start another gesture
             events += ended
@@ -128,6 +135,7 @@ public struct GestureRecognizer {
             s.twoMode = .undecided
             s.pairStart = nil
             s.lastPairDistance = nil
+            s.lastPairAngle = nil
             s.multiMode = .undecided
             s.multiStart = nil
             s.multiTravel = 0
@@ -233,11 +241,15 @@ public struct GestureRecognizer {
     /// ratio test can't tell them apart (spacing wobbles a few percent during every
     /// scroll), and summing per-frame changes would count that wobble as pinching.
     private func twoFinger(_ s: inout Session, _ frame: TouchFrame, dx: Double, dy: Double) -> [GestureEvent] {
-        let a = frame.contacts[0], b = frame.contacts[1]
+        // Order by finger id so the pair's angle doesn't flip when the report order does.
+        let pair = frame.contacts.sorted { $0.fingerID < $1.fingerID }
+        let a = pair[0], b = pair[1]
         let dist = hypot(Double(a.x - b.x), Double(a.y - b.y))
         let mx = Double(a.x + b.x) / 2, my = Double(a.y + b.y) / 2
-        defer { s.lastPairDistance = dist }
-        if s.pairStart == nil { s.pairStart = (dist, mx, my) }
+        let angle = atan2(Double(b.y - a.y), Double(b.x - a.x))   // y points down, so this grows clockwise
+        let prevAngle = s.lastPairAngle ?? angle
+        defer { s.lastPairDistance = dist; s.lastPairAngle = angle }
+        if s.pairStart == nil { s.pairStart = (dist, mx, my, angle) }
         guard let prev = s.lastPairDistance, prev > 0 else { return [] }
 
         switch s.twoMode {
@@ -246,23 +258,42 @@ public struct GestureRecognizer {
             let tx = mx - start.mx, ty = my - start.my
             let translation = hypot(tx, ty)
             let spread = abs(dist - start.dist)
-            guard translation + spread >= modeDecisionTravel else { return [] }
+            let turned = Self.wrap(angle - start.ang)
+            let arc = abs(turned) * dist / 2          // how far each finger travelled around the midpoint
+            guard translation + spread + arc >= modeDecisionTravel else { return [] }
             // Two fingers entering from the right edge, moving inward: Notification Center.
-            if start.mx >= Self.padWidth - edgeMargin, tx < 0, abs(tx) > pinchBias * abs(ty), spread < translation {
+            if start.mx >= Self.padWidth - edgeMargin, tx < 0, abs(tx) > pinchBias * abs(ty), spread < translation, arc < translation {
                 s.twoMode = .edge
                 s.edgeTravel = -tx
                 return [.edgeSwipe(phase: .began, travel: 0), .edgeSwipe(phase: .changed, travel: s.edgeTravel)]
+            }
+            // Turning the pair: the fingers travel around the midpoint, which stays put (or
+            // the pair pivots on one finger), and the spacing barely changes.
+            if arc > rotateBias * translation, arc > spread {
+                s.twoMode = .rotate
+                return [.rotate(degrees: turned * 180 / .pi)]   // the turn so far, then incremental
             }
             s.twoMode = spread > pinchBias * translation ? .pinch : .scroll
             return []
         case .edge:
             s.edgeTravel = -(mx - s.pairStart!.mx)
             return [.edgeSwipe(phase: .changed, travel: s.edgeTravel)]
+        case .rotate:
+            let step = Self.wrap(angle - prevAngle)
+            return step == 0 ? [] : [.rotate(degrees: step * 180 / .pi)]
         case .scroll:
             return [.scroll(dx: dx, dy: dy)]
         case .pinch:
             return dist == prev ? [] : [.pinch(scale: dist / prev)]
         }
+    }
+
+    /// Fold an angle difference into (-pi, pi].
+    private static func wrap(_ a: Double) -> Double {
+        var x = a
+        while x > .pi { x -= 2 * .pi }
+        while x <= -.pi { x += 2 * .pi }
+        return x
     }
 
     /// Three or four settled fingers. The mode is chosen once, from net movement of the
@@ -344,6 +375,7 @@ public struct GestureRecognizer {
         var out = endMulti(s)
         if s.twoMode == .pinch { out.append(.pinchEnd) }
         if s.twoMode == .edge { out.append(.edgeSwipe(phase: .ended, travel: s.edgeTravel)) }
+        if s.twoMode == .rotate { out.append(.rotateEnd) }
         if out.isEmpty, s.tapFingers > 0, duration <= tapMaxDuration, travel <= tapMaxTravel, !s.sawButton {
             out.append(.tap(fingers: s.tapFingers))
         }

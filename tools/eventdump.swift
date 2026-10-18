@@ -46,11 +46,21 @@ let dragSteps = [
     "3-finger quick TAP only (no hold, no move)",
     "3-finger tap, then immediately put 3 fingers down again and HOLD, drag, release",
 ]
+// `... /tmp/rotate.txt rotate`: two-finger rotation and smart zoom. Open a photo in Preview
+// (rotation) and a web page in Safari (smart zoom), and check each works on screen first.
+let rotateSteps = [
+    "2-finger ROTATE clockwise about 90 degrees on a photo in Preview, slowly",
+    "2-finger ROTATE counterclockwise about 90 degrees, slowly",
+    "2-finger ROTATE clockwise, stop HALFWAY and hold 2 seconds, then finish",
+    "2-finger DOUBLE TAP on a web page in Safari (smart zoom in)",
+    "2-finger DOUBLE TAP again (smart zoom out)",
+]
 let activeSteps: [String] = {
     guard CommandLine.arguments.count > 2 else { return steps }
     switch CommandLine.arguments[2] {
     case "edge": return edgeSteps
     case "drag": return dragSteps
+    case "rotate": return rotateSteps
     default: return steps
     }
 }()

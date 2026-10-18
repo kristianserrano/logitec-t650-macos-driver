@@ -30,6 +30,11 @@ final class Output {
     var pinchGain = Output.env("T650_PINCH_GAIN") ?? 1.0
     private var magnifying = false
     private var dragging = false
+    /// Two-finger double tap = smart zoom, as on a trackpad. A single two-finger tap is a
+    /// secondary click, so it waits a moment to see whether a second tap follows.
+    /// T650_SMART_ZOOM=0 disables smart zoom and makes the secondary click immediate.
+    let smartZoom = Output.env("T650_SMART_ZOOM") != 0
+    private var pendingSecondaryClick: DispatchWorkItem?
     /// Inward travel, in device units (~18 mm), that counts as a deliberate edge swipe.
     var edgeCommit = Output.env("T650_EDGE_COMMIT") ?? 400
     private let debugEdge = ProcessInfo.processInfo.environment["T650_DEBUG"] != nil
@@ -59,7 +64,7 @@ final class Output {
             // The pad's firmware handles pointer, scroll and tap; moves are ours only
             // while a three-finger drag holds the button.
             switch e {
-            case .swipe, .pinch, .pinchEnd, .dragBegan, .dragEnded, .edgeSwipe, .tap: break
+            case .swipe, .pinch, .pinchEnd, .dragBegan, .dragEnded, .edgeSwipe, .tap, .rotate, .rotateEnd: break
             case .move where dragging: break
             default: return
             }
@@ -86,7 +91,7 @@ final class Output {
         case .tap(fingers: 1):
             if tapToClick { click(down: true); click(down: false) }
         case .tap(fingers: 2):
-            if tapToClick { rightClick() }
+            twoFingerTap()
         case .tap:
             break
         case let .edgeSwipe(phase, travel):
@@ -95,6 +100,11 @@ final class Output {
             // swipe toggles Notification Center instead. It can't follow the fingers.
             if debugEdge { NSLog("t650d: edge swipe %@ travel %.0f", String(describing: phase), travel) }
             if phase == .ended, travel >= edgeCommit { toggleNotificationCenter() }
+        case let .rotate(degrees):
+            // Native rotate event not captured yet (see tools/eventdump.swift "rotate").
+            if debugEdge { NSLog("t650d: rotate %.1f deg", degrees) }
+        case .rotateEnd:
+            break
         case .dragBegan:
             dragging = true
             click(down: true)
@@ -141,6 +151,36 @@ final class Output {
         ev.setIntegerValueField(CGEventField(rawValue: 110)!, value: 8)
         ev.setIntegerValueField(CGEventField(rawValue: 132)!, value: phase)
         if let m = magnification { ev.setDoubleValueField(CGEventField(rawValue: 113)!, value: m) }
+        ev.post(tap: .cghidEventTap)
+    }
+
+    private func twoFingerTap() {
+        guard smartZoom else {
+            if tapToClick { rightClick() }
+            return
+        }
+        if let pending = pendingSecondaryClick {
+            pending.cancel()
+            pendingSecondaryClick = nil
+            postSmartZoom()
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.pendingSecondaryClick = nil
+            if self.tapToClick { self.rightClick() }
+        }
+        pendingSecondaryClick = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    /// Smart zoom, as recorded from a Casa Touch under Options+: a single CGEvent of type
+    /// 29 with field 110 = 22 and nothing else; the system acts at the pointer.
+    func postSmartZoom() {
+        guard let ev = CGEvent(source: nil), let type = CGEventType(rawValue: 29) else { return }
+        ev.type = type
+        ev.flags = CGEventFlags(rawValue: 0x2000_0100)
+        ev.setIntegerValueField(CGEventField(rawValue: 110)!, value: 22)
         ev.post(tap: .cghidEventTap)
     }
 
