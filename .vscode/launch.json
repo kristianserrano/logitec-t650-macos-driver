@@ -15,6 +15,20 @@
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:logitec-t650-macos-driver}",
+            "name": "Debug t650d (verbose)",
+            "target": "t650d",
+            "configuration": "debug",
+            "env": {
+                "T650_DEBUG": "1",
+                "T650_RECORD": "/tmp/frames.txt"
+            },
+            "preLaunchTask": "swift: Build Debug t650d"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:logitec-t650-macos-driver}",
             "name": "Release t650d",
             "target": "t650d",
             "configuration": "release",
