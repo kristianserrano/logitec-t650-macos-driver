@@ -49,7 +49,7 @@ public struct GestureRecognizer {
     public var settleFrames = 3              // frames a finger count must hold to count
     public var modeDecisionTravel = 40.0     // device units of motion before scroll/pinch/swipe is chosen
     public var dragSlop = 30.0               // device units (~1.4 mm) before a held-button drag moves
-    public var dragHoldMs = 200.0            // three fingers still this long = begin a drag
+    public var dragHoldMs = 50.0             // three fingers still this long = begin a drag (tuned on hardware)
     public var dragHoldSlop = 60.0           // ... "still" tolerates this much landing/resting jitter (~2.7 mm)
     public var pinchBias = 1.5               // two fingers: spread change must beat translation by this factor
     public var multiPinchBias = 0.8          // four fingers: a thumb closing on three fingers moves the centroid
