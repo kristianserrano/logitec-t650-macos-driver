@@ -1,6 +1,8 @@
 // GestureEvent -> CGEvent. The "what does it feel like" layer; every constant
 // here is a tuning knob to calibrate on hardware, not derived truth.
 #if os(macOS)
+import AppKit
+import ApplicationServices
 import CoreGraphics
 import Foundation
 import T650Kit
@@ -28,6 +30,8 @@ final class Output {
     var pinchGain = Output.env("T650_PINCH_GAIN") ?? 1.0
     private var magnifying = false
     private var dragging = false
+    /// Inward travel, in device units (~18 mm), that counts as a deliberate edge swipe.
+    var edgeCommit = Output.env("T650_EDGE_COMMIT") ?? 400
     private let debugEdge = ProcessInfo.processInfo.environment["T650_DEBUG"] != nil
     private var lastClick: (t: Double, p: CGPoint, state: Int64)?
     private var clickState: Int64 = 1
@@ -86,9 +90,11 @@ final class Output {
         case .tap:
             break
         case let .edgeSwipe(phase, travel):
-            // Notification Center edge swipe: recognised, but the native event hasn't been
-            // captured yet (run tools/eventdump.swift with the "edge" list).
+            // Two fingers in from the right edge. macOS has no gesture event for this that
+            // we can post (the Casa Touch/Options+ produced none to copy), so a committed
+            // swipe toggles Notification Center instead. It can't follow the fingers.
             if debugEdge { NSLog("t650d: edge swipe %@ travel %.0f", String(describing: phase), travel) }
+            if phase == .ended, travel >= edgeCommit { toggleNotificationCenter() }
         case .dragBegan:
             dragging = true
             click(down: true)
@@ -136,6 +142,30 @@ final class Output {
         ev.setIntegerValueField(CGEventField(rawValue: 132)!, value: phase)
         if let m = magnification { ev.setDoubleValueField(CGEventField(rawValue: 113)!, value: m) }
         ev.post(tap: .cghidEventTap)
+    }
+
+    /// Press the menu-bar clock, which opens (or closes) Notification Center. Uses the
+    /// Accessibility API, which the daemon needs anyway for posting events. If the clock
+    /// item can't be found, falls back to the Globe/Fn-N shortcut.
+    func toggleNotificationCenter() {
+        if AXIsProcessTrusted(),
+           let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.controlcenter").first {
+            let root = AXUIElementCreateApplication(app.processIdentifier)
+            var bar: CFTypeRef?
+            if AXUIElementCopyAttributeValue(root, "AXExtrasMenuBar" as CFString, &bar) == .success, let bar = bar {
+                var kids: CFTypeRef?
+                AXUIElementCopyAttributeValue(bar as! AXUIElement, kAXChildrenAttribute as CFString, &kids)
+                for item in (kids as? [AXUIElement]) ?? [] {
+                    var ident: CFTypeRef?
+                    AXUIElementCopyAttributeValue(item, "AXIdentifier" as CFString, &ident)
+                    if (ident as? String) == "com.apple.menuextra.clock" {
+                        if AXUIElementPerformAction(item, kAXPressAction as CFString) == .success { return }
+                    }
+                }
+            }
+        }
+        NSLog("t650d: clock menu item not found; trying Fn-N")
+        key(0x2D, flags: .maskSecondaryFn)   // N with the Fn/Globe flag
     }
 
     /// Every mouse event we post carries explicit empty modifier flags. Without that,

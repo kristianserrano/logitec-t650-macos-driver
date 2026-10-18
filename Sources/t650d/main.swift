@@ -360,9 +360,17 @@ final class Daemon {
 /// --synthetic=<name>: post one native swipe gesture without the pad, to check that
 /// macOS reacts to the events themselves. Names: pinch-in, spread, left, right, up, down
 /// (4 fingers; left/right/up/down are the direction the fingers move), 3-left, 3-right,
-/// and drag (the 3-finger hold-drag: press, move right, release).
+/// drag (the 3-finger hold-drag: press, move right, release), and edge (toggle Notification Center).
 func syntheticGesture(_ name: String) {
     let out = Output(gesturesOnly: false)
+    if name == "edge" || name == "notification-center" {
+        // The committed right-edge swipe: toggles Notification Center.
+        out.post(.edgeSwipe(phase: .began, travel: 0))
+        out.post(.edgeSwipe(phase: .changed, travel: 300))
+        out.post(.edgeSwipe(phase: .ended, travel: 500))
+        print("t650d: posted synthetic edge swipe")
+        return
+    }
     if name == "drag" {
         // The 3-finger hold-drag as the daemon posts it: press at the pointer, drag ~300 px
         // right in 40 steps, release. Park the pointer on a window's title bar first.
