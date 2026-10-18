@@ -12,8 +12,30 @@ import T650Kit
 
 let vendorID = 0x046d, productID = 0xc52b       // Unifying receiver (spec §1.1)
 let maxSlot: UInt8 = 6                          // Unifying receivers pair up to 6 devices
-let rawStateEnabled: UInt8 = 0x05               // raw + enhanced sensitivity (spec §2.3)
+// Raw report state (0x6100 function 2). Default 0x05 = exclusive raw + enhanced
+// sensitivity (spec §2.3): the pad's pointer stops and we synthesize everything.
+// Default is dual mode: 0x15 (adds bit 4, "native gestures kept alongside raw"). Tested
+// on a T650: the pointer, scroll and physical click stay native and clean, and we add
+// gestures and tap-to-click. T650_MODE=raw forces exclusive raw (0x05).
+let dualMode = ProcessInfo.processInfo.environment["T650_MODE"] != "raw"
+let rawStateEnabled: UInt8 = dualMode ? 0x15 : 0x05
 let rawStateDefault: UInt8 = 0x00
+let debugGestures = ProcessInfo.processInfo.environment["T650_DEBUG"] != nil
+var restoring = false
+let statusOnly = CommandLine.arguments.contains("--status")   // read the raw state and exit
+// --set-state=15 writes that raw report state (hex), verifies it, and exits WITHOUT restoring,
+// to see how the pad behaves natively in that mode. Undo with --set-state=00 (or a power cycle).
+let setStateTarget: UInt8? = CommandLine.arguments.compactMap { arg -> UInt8? in
+    guard arg.hasPrefix("--set-state=") else { return nil }
+    return UInt8(arg.dropFirst("--set-state=".count).replacingOccurrences(of: "0x", with: ""), radix: 16)
+}.first
+// T650_RECORD=/tmp/frames.txt appends every raw touch report in the capture-fixture
+// format (`<host_ms> live <20 hex bytes>`), so a misbehaving gesture can be replayed.
+let recorder: FileHandle? = {
+    guard let path = ProcessInfo.processInfo.environment["T650_RECORD"] else { return nil }
+    FileManager.default.createFile(atPath: path, contents: nil)
+    return FileHandle(forWritingAtPath: path)
+}()
 
 /// One HID++ request in flight. Re-sent on `Hidpp.retryDelaysMs` until a matching
 /// reply or error arrives (spec §2.4: the first request after idle is dropped).
@@ -143,14 +165,30 @@ final class Receiver {
             NSLog("t650d: TOUCHPAD_RAW_XY at feature index %d, slot %d", feat, s)
             self.request(slot: s, feature: feat, function: 1) { stateReply in
                 guard let state = stateReply?[4] else { return fail("getRawReportState timed out") }
+                if statusOnly {
+                    // Read-only: report the state and leave it exactly as found.
+                    print(String(format: "t650d: slot %d raw report state is 0x%02x (%@)", s, state,
+                                 state & 0x10 != 0 ? "dual raw" : state & 0x01 != 0 ? "exclusive raw" : "normal"))
+                    exit(0)
+                }
+                if let target = setStateTarget {
+                    self.request(slot: s, feature: feat, function: 2, params: [target]) { _ in
+                        self.request(slot: s, feature: feat, function: 1) { verify in
+                            print(String(format: "t650d: slot %d raw report state set to 0x%02x, read back 0x%02x. Left as is; undo with --set-state=00",
+                                         s, target, verify?[4] ?? 0xff))
+                            exit(0)
+                        }
+                    }
+                    return
+                }
                 // If a previous run died with raw mode on, restore to the device default.
-                self.savedState = state == rawStateEnabled ? rawStateDefault : state
+                self.savedState = state & 0x01 != 0 ? rawStateDefault : state
                 self.slot = s
                 self.featureIndex = feat
                 self.request(slot: s, feature: feat, function: 2, params: [rawStateEnabled]) { _ in
                     self.request(slot: s, feature: feat, function: 1) { verify in
                         guard verify?[4] == rawStateEnabled else { return fail("unlock not confirmed") }
-                        NSLog("t650d: raw reports enabled (saved state 0x%02x)", self.savedState ?? 0)
+                        NSLog("t650d: raw reports enabled, state 0x%02x%@ (saved state 0x%02x)", rawStateEnabled, dualMode ? " (dual mode: gestures only)" : "", self.savedState ?? 0)
                         self.daemon.ready(self)
                     }
                 }
@@ -158,23 +196,41 @@ final class Receiver {
         }
     }
 
-    /// Put the raw report state back, confirmed by read-back. Blocks (spinning the
-    /// run loop) so it can run from a signal handler right before exit.
+    /// Put the raw report state back, confirmed by read-back. Blocks so it can run
+    /// from the signal handler right before exit. It must not depend on the main
+    /// dispatch queue: this runs inside a main-queue block, so anything it queued
+    /// there (the async retry timers in `request`) would never get to run.
     func restore() -> Bool {
         guard let s = slot, let feat = featureIndex, let saved = savedState else { return true }
         cancelInflight()
         for _ in 0..<3 {
-            var done = false, ok = false
-            request(slot: s, feature: feat, function: 2, params: [saved]) { [weak self] _ in
-                self?.request(slot: s, feature: feat, function: 1) { reply in
-                    ok = reply?[4] == saved
-                    done = true
-                }
-            }
-            while !done { CFRunLoopRunInMode(CFRunLoopMode.defaultMode, 0.05, false) }
-            if ok { return true }
+            _ = blockingRequest(slot: s, feature: feat, function: 2, params: [saved])
+            if blockingRequest(slot: s, feature: feat, function: 1)?[4] == saved { return true }
         }
         return false
+    }
+
+    /// Send with the same retry schedule as `request`, spinning the run loop only to
+    /// receive the IOHID input callback that delivers the reply.
+    private func blockingRequest(slot s: UInt8, feature: UInt8, function: UInt8,
+                                 params: [UInt8] = []) -> [UInt8]? {
+        var result: [UInt8]?
+        let t = Transaction(packet: Hidpp.request(device: s, feature: feature, function: function,
+                                                  swid: swids.next(), params: params)) { result = $0 }
+        inflight = t
+        defer { inflight = nil }
+        var previous = 0
+        for delay in Hidpp.retryDelaysMs {
+            let wait = max(delay - previous, 100)   // at least 100 ms to hear a reply
+            previous = delay
+            send(t.packet)
+            let deadline = Date().addingTimeInterval(Double(wait) / 1000)
+            while !t.finished && Date() < deadline {
+                CFRunLoopRunInMode(CFRunLoopMode.defaultMode, 0.02, false)
+            }
+            if t.finished { return result }
+        }
+        return nil
     }
 }
 
@@ -185,7 +241,7 @@ final class Daemon {
     var streaming = false          // unlock confirmed; reports are meaningful
     var assembler = FrameAssembler()
     var recognizer = GestureRecognizer()
-    let output = Output()
+    let output = Output(gesturesOnly: dualMode)
 
     func run() {
         // Match only the vendor-defined HID++ interface of the receiver, not the
@@ -259,20 +315,74 @@ final class Daemon {
         if rx.consume(bytes) { return }
         guard streaming, active === rx, let slot = rx.slot, let feat = rx.featureIndex,
               bytes[1] == slot,
-              let report = RawReport(report: bytes, featureIndex: feat),
-              let frame = assembler.add(report) else { return }
-        for event in recognizer.handle(frame) { output.post(event) }
+              let report = RawReport(report: bytes, featureIndex: feat) else { return }
+        if let r = recorder {
+            let hex = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+            r.write(Data("\(Int(Date().timeIntervalSince1970 * 1000) % 100_000_000) live \(hex)\n".utf8))
+        }
+        guard let frame = assembler.add(report) else { return }
+        for event in recognizer.handle(frame) {
+            if debugGestures {
+                switch event {
+                case .move, .scroll: break   // too chatty
+                default: NSLog("t650d: gesture %@", String(describing: event))
+                }
+            }
+            output.post(event)
+        }
     }
 
     /// Restore raw state (read-back verified) and exit. Runs on SIGINT/SIGTERM and
     /// after the run loop returns.
     func restoreAndExit(_ code: Int32) -> Never {
+        // Ctrl-C must always end the process: a second signal, or a restore that
+        // stalls, exits instead of hanging.
+        if restoring { exit(1) }
+        restoring = true
+        DispatchQueue.global().asyncAfter(deadline: .now() + 6) {
+            NSLog("t650d: WARNING restore timed out, exiting")
+            exit(1)
+        }
         streaming = false
         var ok = true
         for rx in receivers where rx.slot != nil { ok = rx.restore() && ok }
         NSLog(ok ? "t650d: raw state restored" : "t650d: WARNING raw state restore not confirmed")
         exit(ok ? code : 1)
     }
+}
+
+/// --synthetic=<name>: post one native swipe gesture without the pad, to check that
+/// macOS reacts to the events themselves. Names: pinch-in, spread, left, right, up, down
+/// (4 fingers; left/right/up/down are the direction the fingers move), 3-left, 3-right.
+func syntheticGesture(_ name: String) {
+    let out = Output(gesturesOnly: false)
+    let fingers: Int, axis: SwipeAxis, travel: Double
+    switch name {
+    case "pinch-in": (fingers, axis, travel) = (4, .pinch, -450)
+    case "spread":   (fingers, axis, travel) = (4, .pinch, 450)
+    case "left":     (fingers, axis, travel) = (4, .horizontal, -900)
+    case "right":    (fingers, axis, travel) = (4, .horizontal, 900)
+    case "up":       (fingers, axis, travel) = (4, .vertical, -700)
+    case "down":     (fingers, axis, travel) = (4, .vertical, 700)
+    case "3-left":   (fingers, axis, travel) = (3, .horizontal, -900)
+    case "3-right":  (fingers, axis, travel) = (3, .horizontal, 900)
+    default:
+        print("unknown gesture '\(name)'")
+        return
+    }
+    out.post(.swipe(phase: .began, fingers: fingers, axis: axis, travel: 0))
+    for i in 1...30 {
+        usleep(15_000)
+        out.post(.swipe(phase: .changed, fingers: fingers, axis: axis, travel: travel * Double(i) / 30))
+    }
+    usleep(60_000)
+    out.post(.swipe(phase: .ended, fingers: fingers, axis: axis, travel: travel))
+    print("t650d: posted synthetic \(name)")
+}
+
+if let name = CommandLine.arguments.first(where: { $0.hasPrefix("--synthetic=") }) {
+    syntheticGesture(String(name.dropFirst("--synthetic=".count)))
+    exit(0)
 }
 
 let daemon = Daemon()

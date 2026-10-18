@@ -74,7 +74,7 @@ final class PipelineTests: XCTestCase {
         XCTAssertTrue(ev[6].contains(.tap(fingers: 2)), "\(ev[6])")
 
         // seg 8: 3/4-finger swipes — at least one multi-finger swipe fired
-        XCTAssertTrue(ev[7].contains { if case let .swipe(f, _, _) = $0 { return f >= 3 }; return false })
+        XCTAssertTrue(ev[7].contains { if case let .swipe(.began, f, _, _) = $0 { return f >= 3 }; return false })
 
         // seg 9: five fingers seen by the assembler
         let seg9 = try XCTUnwrap(segs[8].frames.map(\.contacts.count).max())
