@@ -38,7 +38,22 @@ let edgeSteps = [
     "2-finger swipe IN from the RIGHT edge again, stop HALFWAY and hold 2 seconds, then finish",
     "2-finger swipe IN from the RIGHT edge, stop halfway, then push BACK out and release (cancel)",
 ]
-let activeSteps = CommandLine.arguments.count > 2 && CommandLine.arguments[2] == "edge" ? edgeSteps : steps
+// `... /tmp/drag.txt drag`: the 3-finger accessibility drag. Enable "Accessible drag and
+// drop" for the touchpad in Options+ first (trigger: three-finger tap and hold).
+let dragSteps = [
+    "3-finger TAP AND HOLD on a window's title bar for 1 second, drag it a short way, release",
+    "Same again, but hold for 3 seconds before moving",
+    "3-finger quick TAP only (no hold, no move)",
+    "3-finger tap, then immediately put 3 fingers down again and HOLD, drag, release",
+]
+let activeSteps: [String] = {
+    guard CommandLine.arguments.count > 2 else { return steps }
+    switch CommandLine.arguments[2] {
+    case "edge": return edgeSteps
+    case "drag": return dragSteps
+    default: return steps
+    }
+}()
 
 let skip: Set<UInt32> = [5, 6, 7, 27]   // mouse moved / dragged
 let start = Date()

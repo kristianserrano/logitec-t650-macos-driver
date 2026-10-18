@@ -49,7 +49,8 @@ public struct GestureRecognizer {
     public var settleFrames = 3              // frames a finger count must hold to count
     public var modeDecisionTravel = 40.0     // device units of motion before scroll/pinch/swipe is chosen
     public var dragSlop = 30.0               // device units (~1.4 mm) before a held-button drag moves
-    public var dragHoldMs = 350.0            // three fingers still this long = begin a drag
+    public var dragHoldMs = 200.0            // three fingers still this long = begin a drag
+    public var dragHoldSlop = 60.0           // ... "still" tolerates this much landing/resting jitter (~2.7 mm)
     public var pinchBias = 1.5               // two fingers: spread change must beat translation by this factor
     public var multiPinchBias = 0.8          // four fingers: a thumb closing on three fingers moves the centroid
                                              // almost as much as it shrinks the spacing, so the bar is lower
@@ -283,12 +284,19 @@ public struct GestureRecognizer {
         switch s.multiMode {
         case .undecided:
             let held = Double((frame.timestamp - start.ts + 65536) % 65536)
-            if s.settledCount == 3, trans < dragSlop, abs(ts) < dragSlop, held >= dragHoldMs {
-                s.multiMode = .drag
-                s.multiFingers = 3
-                return [.dragBegan]
+            if s.settledCount == 3 {
+                // Three fingers: resting still long enough is a drag; real movement first is
+                // a swipe. Fingers shift a little as they land and settle, so "still" is
+                // generous and the swipe bar is the same size.
+                if max(trans, abs(ts)) < dragHoldSlop {
+                    guard held >= dragHoldMs else { return [] }
+                    s.multiMode = .drag
+                    s.multiFingers = 3
+                    return [.dragBegan]
+                }
+            } else {
+                guard trans + abs(ts) >= modeDecisionTravel else { return [] }
             }
-            guard trans + abs(ts) >= modeDecisionTravel else { return [] }
             guard s.settledCount <= 4 else { s.multiMode = .ignored; return [] }
             let axis: SwipeAxis?
             if s.settledCount == 4, abs(ts) > multiPinchBias * trans { axis = .pinch }

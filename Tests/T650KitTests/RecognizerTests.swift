@@ -189,6 +189,22 @@ final class RecognizerTests: XCTestCase {
         XCTAssertTrue(swipes(ev).isEmpty, "a held drag is not a swipe")
     }
 
+    func testShortHoldBeginsADragAndASlowStartingSwipeStillSwipes() {
+        // ~240 ms at rest, then movement: a drag.
+        var hold: [TouchFrame] = []
+        for _ in 0..<30 { hold.append(frame(fingers(3, x: 800, y: 800))) }
+        for i in 0..<10 { hold.append(frame(fingers(3, x: 800 + i * 10, y: 800))) }
+        XCTAssertTrue(run(hold).contains(.dragBegan))
+
+        // A swipe that starts gently (10 units per 8 ms frame): 60 units of travel inside
+        // ~50 ms, well before the hold time, so it must stay a swipe.
+        var slow: [TouchFrame] = []
+        for i in 0..<30 { slow.append(frame(fingers(3, x: 600 + i * 10, y: 900))) }
+        let ev = run(slow)
+        XCTAssertFalse(ev.contains(.dragBegan))
+        XCTAssertFalse(swipes(ev).isEmpty)
+    }
+
     func testQuickThreeFingerSwipeIsNotADrag() {
         var frames: [TouchFrame] = []
         for i in 0..<20 { frames.append(frame(fingers(3, x: 600 + i * 20, y: 900))) }

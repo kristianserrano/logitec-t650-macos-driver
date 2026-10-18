@@ -235,12 +235,18 @@ final class Receiver {
 }
 
 final class Daemon {
+    /// Recogniser with the T650_DRAG_HOLD_MS override (ms three fingers must rest before a drag begins).
+    static func makeRecognizer() -> GestureRecognizer {
+        var r = GestureRecognizer()
+        if let ms = Output.env("T650_DRAG_HOLD_MS") { r.dragHoldMs = ms }
+        return r
+    }
     let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
     var receivers: [Receiver] = []
     var active: Receiver?          // the receiver whose T650 we claimed
     var streaming = false          // unlock confirmed; reports are meaningful
     var assembler = FrameAssembler()
-    var recognizer = GestureRecognizer()
+    var recognizer = Daemon.makeRecognizer()
     let output = Output(gesturesOnly: dualMode)
 
     func run() {
@@ -302,7 +308,7 @@ final class Daemon {
         streaming = false
         rx.slot = nil; rx.featureIndex = nil; rx.savedState = nil
         assembler = FrameAssembler()
-        recognizer = GestureRecognizer()
+        recognizer = Daemon.makeRecognizer()
     }
 
     func ready(_ rx: Receiver) {
@@ -353,9 +359,22 @@ final class Daemon {
 
 /// --synthetic=<name>: post one native swipe gesture without the pad, to check that
 /// macOS reacts to the events themselves. Names: pinch-in, spread, left, right, up, down
-/// (4 fingers; left/right/up/down are the direction the fingers move), 3-left, 3-right.
+/// (4 fingers; left/right/up/down are the direction the fingers move), 3-left, 3-right,
+/// and drag (the 3-finger hold-drag: press, move right, release).
 func syntheticGesture(_ name: String) {
     let out = Output(gesturesOnly: false)
+    if name == "drag" {
+        // The 3-finger hold-drag as the daemon posts it: press at the pointer, drag ~300 px
+        // right in 40 steps, release. Park the pointer on a window's title bar first.
+        print("t650d: synthetic drag in 3 s; put the pointer on a window title bar")
+        sleep(3)
+        out.post(.dragBegan)
+        for _ in 0..<40 { usleep(12_000); out.post(.move(dx: 10, dy: 0)) }   // 10 units x 0.7 gain = 7 px each
+        usleep(60_000)
+        out.post(.dragEnded)
+        print("t650d: posted synthetic drag")
+        return
+    }
     let fingers: Int, axis: SwipeAxis, travel: Double
     switch name {
     case "pinch-in": (fingers, axis, travel) = (4, .pinch, -450)
