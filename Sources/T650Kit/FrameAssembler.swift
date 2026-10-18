@@ -13,6 +13,8 @@ public struct FrameAssembler {
     public static let xMax = 2832   // spec §3.4
     public static let yMax = 2364
 
+    static let minReportCap = 5
+
     private var pending: [Contact] = []
     private var pendingReports = 0
     private var previousIDs: Set<Int> = []
@@ -25,8 +27,12 @@ public struct FrameAssembler {
         pendingReports += 1
         guard r.endOfFrame else {
             // ponytail: no timestamp-mismatch recovery; a dropped report loses one
-            // frame (spec §4.1) and the next eof resyncs us. Cap stops runaway.
-            if pendingReports >= 3 { pending = []; pendingReports = 0 }
+            // frame (spec §4.1) and the next eof resyncs us. Cap stops runaway; it
+            // follows the count field (2 contacts per report) with a floor of 5, since
+            // live captures reach 9 contacts (5 reports) and the pad may support more.
+            if pendingReports >= max(Self.minReportCap, (r.fingerCount + 1) / 2) {
+                pending = []; pendingReports = 0
+            }
             return nil
         }
         let contacts = pending.map {
